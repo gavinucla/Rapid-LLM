@@ -138,6 +138,7 @@ class model_LLM:
         )
         self.use_flashattention = getattr(exp_config.model_config.attention, "use_flashattention", False)
         self.attention_tile_size = getattr(exp_config.model_config.attention, "attention_tile_size", None)
+        self.attention_window = getattr(exp_config.model_config.attention, "window", None)  # Project 2: sliding window
         self.kv_lora_rank = getattr(exp_config.model_config.attention, "kv_lora_rank", None)
         self.q_lora_rank = getattr(exp_config.model_config.attention, "q_lora_rank", None)
         self.qk_nope_head_dim = getattr(exp_config.model_config.attention, "qk_nope_head_dim", None)
@@ -499,6 +500,7 @@ class TimeCalculation:
             self.flash_attention = getattr(self.model, "use_flashattention", False)
             self.kv_heads = self.model.kv_heads if hasattr(self.model, "kv_heads") else self.num_heads
             self.attention_tile_size = getattr(self.model, "attention_tile_size", None)
+            self.attention_window = getattr(self.model, "attention_window", None)  # Project 2: sliding window
             self.kv_lora_rank = getattr(self.model, "kv_lora_rank", None)
             self.q_lora_rank = getattr(self.model, "q_lora_rank", None)
             self.qk_nope_head_dim = getattr(self.model, "qk_nope_head_dim", None)

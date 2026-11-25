@@ -1394,8 +1394,8 @@ class AttentionWindowConfig:
     Every other layer is LOCAL: it attends to at most the last ``window_size``
     tokens. With N = 6 that is layers 5, 11, 17, ... global.
 
-    Nothing prices the window yet: validate_model_config refuses a model that
-    declares one with local layers.
+    Priced by Project 2: decode (local layers read min(S, w) KV), prefill (band
+    of width w in FlashAttention) and memory (local layers keep min(S, w) KV).
     """
 
     window_size: int
@@ -2456,14 +2456,6 @@ def validate_model_config(hw_config: HWConfig, model_config: ModelConfig) -> Non
 
     if not isinstance(model, LLMConfig):
         raise ValueError("Unsupported model config type for validation")
-
-    window = getattr(getattr(model, "attention", None), "window", None)
-    if window is not None and int(window.local_global_interval) != 1:
-        raise ValueError(
-            "model_param.attention.window is declared, but nothing prices it yet: every "
-            "attention op is priced against the full KV context, so a local layer would be "
-            "charged as global. Remove the window block, or add the pricing."
-        )
 
     if model.use_moe and model.top_k > model.num_experts:
         raise ValueError("model_param.moe.top_k cannot exceed model_param.moe.num_experts")

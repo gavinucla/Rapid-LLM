@@ -521,6 +521,49 @@ def attention_kv_cache_token_bytes(
     )
 
 
+# ---------------------------------------------------------------------------
+# Sliding-window attention (Project 2)
+#
+# Single source of truth for the local/global layer rule documented on
+# config.AttentionWindowConfig. Decode, prefill and memory all call these, so
+# they can never disagree about which layers are local.
+# ---------------------------------------------------------------------------
+
+def layer_is_global(layer_idx: int, num_layers: int, window) -> bool:
+    """True if layer ``layer_idx`` (0-based) attends to the full context.
+
+    ``window`` is a config.AttentionWindowConfig or None. With no window, or
+    local_global_interval <= 1, every layer is global (dense attention).
+    """
+    if window is None:
+        return True
+    interval = int(window.local_global_interval)
+    if interval <= 1:
+        return True
+    if bool(window.last_layer_global) and layer_idx == num_layers - 1:
+        return True
+    return (layer_idx + 1) % interval == 0
+
+
+def layer_block_kinds(num_layers: int, window) -> list:
+    """One entry per layer: "global" or "local"."""
+    return [
+        "global" if layer_is_global(i, num_layers, window) else "local"
+        for i in range(num_layers)
+    ]
+
+
+def attended_tokens(layer_idx: int, context_len: int, num_layers: int, window) -> int:
+    """KV tokens layer ``layer_idx`` reads/stores at a given context length.
+
+    Global layers use the whole context; local layers at most window_size.
+    """
+    context_len = int(context_len)
+    if layer_is_global(layer_idx, num_layers, window):
+        return context_len
+    return min(context_len, int(window.window_size))
+
+
 def multihead_decoder_gemm(self, batch_size, seq_len, d_model, num_heads, kv_heads, intermediate_size, vocab_size, model_type="gpt"):
     """
     Generate GEMM shapes [M, K, N] for a multi-head Transformer decoder block.

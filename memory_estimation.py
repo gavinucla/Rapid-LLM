@@ -654,6 +654,20 @@ class MemoryEstimator:
                     * 2.0
                 )
 
+        # Project 2 (helper H3): sliding-window attention. A local layer keeps only
+        # min(context, window_size) tokens of KV, a global layer the full context.
+        # KV bytes are linear in tokens, so scale the full-context per-layer size.
+        # Only set when a window is declared; dense models are unchanged.
+        kv_cache_bytes_by_layer = None
+        window = getattr(tc, "attention_window", None)
+        if window is not None and kv_cache_bytes_per_layer and kv_cache_tokens:
+            kv_tokens = int(kv_cache_tokens)
+            num_layers = int(tc.num_layers)
+            kv_cache_bytes_by_layer = [
+                kv_cache_bytes_per_layer * llm_util.attended_tokens(i, kv_tokens, num_layers, window) / kv_tokens
+                for i in range(num_layers)
+            ]
+
         param_gather_bytes = 0.0
         if mode == "training" and zero3_ephemeral_peak_bytes and dp > 1 and zero_stage >= 3:
             param_gather_bytes = float(zero3_ephemeral_peak_bytes)
@@ -691,6 +705,7 @@ class MemoryEstimator:
             "transient_bytes_by_kind_moe": transient_bytes_by_kind_moe,
             "extra_static_bytes_per_device": extra_static_bytes_per_device,
             "kv_cache_bytes_per_layer": kv_cache_bytes_per_layer,
+            "kv_cache_bytes_by_layer": kv_cache_bytes_by_layer,
             "zero3_ephemeral_peak_bytes": zero3_ephemeral_peak_bytes,
             "param_gather_bytes": param_gather_bytes,
         }

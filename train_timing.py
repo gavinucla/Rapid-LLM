@@ -1158,8 +1158,11 @@ class TimeCalculationLLM(TimeCalculation):
         )
         return reduction_time
 
-    def flash_attention_kernel_forward(self, batch_size, hidden_dim, seq_len, num_heads, kv_heads, num_SMs) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
-        """Return time for flash attention kernel."""
+    def flash_attention_kernel_forward(self, batch_size, hidden_dim, seq_len, num_heads, kv_heads, num_SMs, window=None) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+        """Return time for flash attention kernel.
+
+        window: Project 2 sliding window in tokens (None = full causal attention).
+        """
         
         shard_seq = math.ceil(seq_len / max(1, self.cp)) 
         head_dim = getattr(self, "head_dim", None)
@@ -1184,7 +1187,13 @@ class TimeCalculationLLM(TimeCalculation):
                     continue
                 if max_c >= Tc:
                     max_c = Tc - 1
-                active_tiles += max_c + 1
+                # Project 2: a local layer only sees the last `window` tokens. The first
+                # query in row tile r (token r*Br) reaches back furthest, to token
+                # r*Br - window + 1; key tiles before that one are skipped (the band).
+                min_c = 0
+                if window is not None:
+                    min_c = max(0, (r * Br - window + 1) // Bc)
+                active_tiles += max_c - min_c + 1
         else:
             active_tiles = Tc * Tr
 
@@ -3724,6 +3733,7 @@ class TimeCalculationLLM(TimeCalculation):
         intermediate_size,
         num_SMs,
         use_moe_override: Optional[bool] = None,
+        attention_window: Optional[int] = None,  # Project 2: sliding window (tokens)
     ):
         """Compute latency for all GEMM operations and node breakdown times."""
 
@@ -3948,6 +3958,7 @@ class TimeCalculationLLM(TimeCalculation):
                 num_heads,
                 kv_heads,
                 num_SMs,
+                window=attention_window,
             )
             attention_b, attention_gemm_b, attention_reduction_b, attention_size_b = self.flash_attention_kernel_backward(
                 batch_size,

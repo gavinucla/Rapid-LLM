@@ -1,0 +1,40 @@
+# Mistral 7B, from Table 1 of the paper (arXiv 2310.06825): 32 layers, hidden 4096,
+# 32 heads, 8 KV heads, head dim 128, FFN 14336, vocab 32000, window 4096 on every layer.
+# Not in the table, so assumed: SwiGLU FFN, untied embeddings, bf16.
+# local_global_interval is bigger than the layer count, so no layer is global.
+
+model_param:
+  mode: "LLM"
+  run_type: "inference"
+  model_id: "mistral_7b"
+  model_type: "llama"
+  tied_embeddings: false
+  global_batch_size: 1
+  gradient_accumulation_steps: 1
+  seq_len: 16512
+  decode_len: 128
+  hidden_dim: 4096
+  num_layers: 32
+  vocab_size: 32000
+  intermediate_size: 14336
+  attention:
+    attention_type: "gqa"
+    num_heads: 32
+    kv_heads: 8
+    head_dim: 128
+    use_flashattention: true
+    attention_tile_size: 128
+    window:
+      window_size: 4096
+      local_global_interval: 33
+      last_layer_global: false
+  moe:
+    num_experts: 1
+    top_k: 1
+    moe_intermediate_size: 14336
+    n_shared_experts: 0
+    moe_layer_freq: 1
+    first_k_dense_replace: 32
+
+inference_param:
+  sample_every: -1

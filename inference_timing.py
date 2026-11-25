@@ -639,6 +639,26 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
         output_act_bytes = decode_gemm_shapes_dense["qkv_proj"][0] * decode_gemm_shapes_dense["qkv_proj"][1] * self.precision_bytes
         energy = self.calc_energy(transformer_timings, output_act_bytes)
 
+        # Project 2 (H4): the layer priced above is a global layer (full context).
+        # Price a local layer at min(context, w); gemm_shapes=None rebuilds the
+        # attention shapes at that length. "dense" = H4's default template = global.
+        block_timings_by_kind = None
+        layer_block_kinds = ()
+        window = getattr(self, "attention_window", None)
+        if window is not None and total_seq_len > window.window_size:
+            local_timings, local_breakdown = self._build_decode_transformer_results(
+                batch_size=batch_size,
+                total_seq_len=window.window_size,
+                use_moe_layer=False,
+                gemm_shapes=None,
+                query_tokens=query_tokens,
+            )
+            block_timings_by_kind = {"local": (local_timings, local_breakdown)}
+            layer_block_kinds = [
+                "dense" if t == "global" else "local"
+                for t in llm_util.layer_block_kinds(self.num_layers, window)
+            ]
+
         if self._generate_graphs:
             results_path = os.path.join(self.output_dir, "decode_transformer_results.txt")
             with open(results_path, "w", encoding="utf-8") as results_file:
@@ -667,8 +687,8 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
             include_pipeline_backward=False,
             include_transformer_backward=False,
             gemm_shapes=decode_gemm_shapes_moe if self.use_moe else decode_gemm_shapes_dense,
-            block_timings_by_kind=None,  # helper H4: extra layer kinds (Project 2)
-            layer_block_kinds=(),
+            block_timings_by_kind=block_timings_by_kind,  # helper H4 (Project 2)
+            layer_block_kinds=layer_block_kinds,
         ), energy
     
     def calc_energy(self, transformer_timings: Dict[str, OperationTiming], cross_layer_comm) -> float:
@@ -786,6 +806,30 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
             output_act_bytes = batch_size * prefill_len * hidden_dim * self.precision_bytes
             total_energy = self.calc_energy(transformer_timings, output_act_bytes)
 
+            # Project 2 (H4): the layer priced above is a global layer (full triangle).
+            # Price a local layer whose FlashAttention computes only the band of width w.
+            block_timings_by_kind = None
+            layer_block_kinds = ()
+            window = getattr(self, "attention_window", None)
+            if window is not None and prefill_len > window.window_size:
+                local_timings, local_breakdown = self.compute_all_gemm_and_node_times(
+                    batch_size,
+                    vocab_size,
+                    hidden_dim,
+                    prefill_len,
+                    num_heads,
+                    kv_heads,
+                    intermediate_size,
+                    num_SMs,
+                    use_moe_override=False,
+                    attention_window=window.window_size,
+                )
+                block_timings_by_kind = {"local": (local_timings, local_breakdown)}
+                layer_block_kinds = [
+                    "dense" if t == "global" else "local"
+                    for t in llm_util.layer_block_kinds(self.num_layers, window)
+                ]
+
             head_dim = getattr(self, "head_dim", None)
             if head_dim is None:
                 head_dim = hidden_dim // num_heads
@@ -828,8 +872,8 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
                 vocab_size=vocab_size,
                 include_pipeline_backward=False,
                 include_transformer_backward=False,
-                block_timings_by_kind=None,  # helper H4: extra layer kinds (Project 2)
-                layer_block_kinds=(),
+                block_timings_by_kind=block_timings_by_kind,  # helper H4 (Project 2)
+                layer_block_kinds=layer_block_kinds,
             )
 
             self.pipeline_graph = pipeline_graph
@@ -1086,6 +1130,24 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
         decode_fetch_bytes = token_bytes * num_layers * (
             decode_len * (prefill_len + self.seq_len) // 2
         )
+
+        # Project 2: with a sliding window, local layers keep and read at most w tokens.
+        # Global layers keep the formulas above; decode_store is unchanged (each step
+        # still writes one token per layer; a local layer overwrites its oldest one).
+        window = getattr(self, "attention_window", None)
+        if window is not None:
+            kinds = llm_util.layer_block_kinds(num_layers, window)
+            n_global = kinds.count("global")
+            n_local = kinds.count("local")
+            w = window.window_size
+            prefill_store_bytes = token_bytes * (
+                n_global * prefill_len + n_local * min(prefill_len, w)
+            )
+            local_fetch_tokens = sum(min(prefill_len + t, w) for t in range(1, decode_len + 1))
+            decode_fetch_bytes = token_bytes * (
+                n_global * (decode_len * (prefill_len + self.seq_len) // 2)
+                + n_local * local_fetch_tokens
+            )
 
         def _to_gib(byte_val: int) -> str:
             gib_val = byte_val / (1024 ** 3)
